@@ -1,0 +1,73 @@
+// Next.js API route (Node 18+ / Next 12+)
+// npm packages used: cheerio (npm i cheerio)
+// This endpoint fetches the Instagram post page HTML and extracts the og:video (or JSON LD) URL.
+// Note: Instagram may change markup; this is a best-effort approach for public posts.
+
+import cheerio from "cheerio";
+
+export default async function handler(req, res) {
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
+  const { url } = req.body || {};
+  if (!url) return res.status(400).json({ error: "Missing 'url' in request body" });
+
+  try {
+    // basic validation
+    const parsed = new URL(url);
+    if (!parsed.hostname.includes("instagram.com")) {
+      return res.status(400).json({ error: "Please provide a valid Instagram post URL." });
+    }
+
+    // fetch Instagram page HTML (server-side)
+    const fetchRes = await fetch(url, {
+      headers: {
+        // set a user-agent similar to browsers to reduce blocking
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117 Safari/537.36",
+        Accept: "text/html",
+      },
+    });
+
+    if (!fetchRes.ok) return res.status(502).json({ error: "Failed to fetch Instagram post." });
+    const html = await fetchRes.text();
+
+    // parse HTML and look for video URL in meta tags or window._sharedData script
+    const $ = cheerio.load(html);
+
+    // 1) try og:video
+    let videoUrl = $('meta[property="og:video"]').attr("content");
+
+    // 2) fallback: look for JSON embedded data (window._sharedData or application/ld+json)
+    if (!videoUrl) {
+      const jsonLd = $('script[type="application/ld+json"]').html();
+      if (jsonLd) {
+        try {
+          const data = JSON.parse(jsonLd);
+          // typical ld+json for video may have contentUrl or embedUrl
+          if (data && data.contentUrl) videoUrl = data.contentUrl;
+          else if (data && data.embedUrl) videoUrl = data.embedUrl;
+        } catch (e) {
+          /* ignore parse errors */
+        }
+      }
+    }
+
+    // 3) another fallback: search for "video_url" or "display_url" in page scripts
+    if (!videoUrl) {
+      const scripts = $("script").map((i, el) => $(el).html()).get().join("\n");
+      const videoMatch = scripts.match(/\"video_url\":\"(https:[^"]+)\"/);
+      if (videoMatch) videoUrl = videoMatch[1].replace(/\\u0026/g, "&").replace(/\\/g, "");
+    }
+
+    if (!videoUrl) {
+      return res.status(404).json({ error: "Video URL not found or the post is private/blocked." });
+    }
+
+    // Optional: redirect the client directly to video URL (safe) or return JSON with the URL
+    // We will return JSON with the direct video URL so frontend can choose download or open.
+    return res.status(200).json({ videoUrl });
+  } catch (err) {
+    console.error("Instagram downloader error:", err);
+    return res.status(500).json({ error: "Server error while processing the URL." });
+  }
+}
