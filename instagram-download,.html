@@ -1,73 +1,91 @@
-// Next.js API route (Node 18+ / Next 12+)
-// npm packages used: cheerio (npm i cheerio)
-// This endpoint fetches the Instagram post page HTML and extracts the og:video (or JSON LD) URL.
-// Note: Instagram may change markup; this is a best-effort approach for public posts.
+import { useState } from "react";
 
-import cheerio from "cheerio";
+export default function InstagramDownloader() {
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [videoUrl, setVideoUrl] = useState(null);
+  const [error, setError] = useState("");
 
-export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setVideoUrl(null);
+    if (!url) return setError("Please paste an Instagram post URL.");
 
-  const { url } = req.body || {};
-  if (!url) return res.status(400).json({ error: "Missing 'url' in request body" });
-
-  try {
-    // basic validation
-    const parsed = new URL(url);
-    if (!parsed.hostname.includes("instagram.com")) {
-      return res.status(400).json({ error: "Please provide a valid Instagram post URL." });
+    setLoading(true);
+    try {
+      const res = await fetch("/api/instagram-downloader", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to fetch video.");
+      setVideoUrl(data.videoUrl);
+    } catch (err) {
+      setError(err.message || "Unknown error");
+    } finally {
+      setLoading(false);
     }
+  };
 
-    // fetch Instagram page HTML (server-side)
-    const fetchRes = await fetch(url, {
-      headers: {
-        // set a user-agent similar to browsers to reduce blocking
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117 Safari/537.36",
-        Accept: "text/html",
-      },
-    });
+  return (
+    <div className="max-w-xl mx-auto bg-white rounded-xl shadow p-6">
+      <h3 className="text-lg font-semibold text-pink-600">Instagram Video Downloader</h3>
+      <p className="text-sm text-gray-600 mt-1">Paste a public Instagram post URL to get a downloadable video link.</p>
 
-    if (!fetchRes.ok) return res.status(502).json({ error: "Failed to fetch Instagram post." });
-    const html = await fetchRes.text();
+      <form onSubmit={handleSubmit} className="mt-4 space-y-3">
+        <input
+          type="url"
+          placeholder="https://www.instagram.com/p/XXXXXXXXX/"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          className="w-full px-4 py-3 border rounded-lg outline-none"
+        />
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            className="flex-1 bg-pink-600 text-white px-4 py-2 rounded-lg hover:bg-pink-700 transition"
+            disabled={loading}
+          >
+            {loading ? "Processing..." : "Get Video"}
+          </button>
+          <button
+            type="button"
+            className="px-4 py-2 border rounded-lg text-pink-600"
+            onClick={() => { setUrl(""); setVideoUrl(null); setError(""); }}
+          >
+            Clear
+          </button>
+        </div>
+      </form>
 
-    // parse HTML and look for video URL in meta tags or window._sharedData script
-    const $ = cheerio.load(html);
+      {error && <div className="mt-3 text-sm text-red-600">{error}</div>}
 
-    // 1) try og:video
-    let videoUrl = $('meta[property="og:video"]').attr("content");
+      {videoUrl && (
+        <div className="mt-4 bg-pink-50 p-3 rounded-md">
+          <p className="text-sm text-gray-700">Video URL found — use the button below to download or open:</p>
+          <div className="mt-2 flex gap-2">
+            <a
+              href={videoUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block bg-blue-600 text-white px-4 py-2 rounded-lg"
+            >
+              Open Video
+            </a>
+            <a
+              href={videoUrl}
+              download
+              className="inline-block border px-4 py-2 rounded-lg text-blue-600"
+            >
+              Download
+            </a>
+          </div>
+        </div>
+      )}
 
-    // 2) fallback: look for JSON embedded data (window._sharedData or application/ld+json)
-    if (!videoUrl) {
-      const jsonLd = $('script[type="application/ld+json"]').html();
-      if (jsonLd) {
-        try {
-          const data = JSON.parse(jsonLd);
-          // typical ld+json for video may have contentUrl or embedUrl
-          if (data && data.contentUrl) videoUrl = data.contentUrl;
-          else if (data && data.embedUrl) videoUrl = data.embedUrl;
-        } catch (e) {
-          /* ignore parse errors */
-        }
-      }
-    }
-
-    // 3) another fallback: search for "video_url" or "display_url" in page scripts
-    if (!videoUrl) {
-      const scripts = $("script").map((i, el) => $(el).html()).get().join("\n");
-      const videoMatch = scripts.match(/\"video_url\":\"(https:[^"]+)\"/);
-      if (videoMatch) videoUrl = videoMatch[1].replace(/\\u0026/g, "&").replace(/\\/g, "");
-    }
-
-    if (!videoUrl) {
-      return res.status(404).json({ error: "Video URL not found or the post is private/blocked." });
-    }
-
-    // Optional: redirect the client directly to video URL (safe) or return JSON with the URL
-    // We will return JSON with the direct video URL so frontend can choose download or open.
-    return res.status(200).json({ videoUrl });
-  } catch (err) {
-    console.error("Instagram downloader error:", err);
-    return res.status(500).json({ error: "Server error while processing the URL." });
-  }
+      <p className="mt-4 text-xs text-gray-500">Note: Only public posts are supported. Respect copyright and Instagram terms.</p>
+    </div>
+  );
 }
